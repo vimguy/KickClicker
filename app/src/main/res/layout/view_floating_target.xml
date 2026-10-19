@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/target_root"
+    android:layout_width="48dp"
+    android:layout_height="48dp"
+    android:background="@drawable/bg_floating_target">
+
+    <!-- Crosshair vertical line -->
+    <View
+        android:layout_width="1dp"
+        android:layout_height="12dp"
+        android:layout_gravity="center"
+        android:background="#FFFFFF" />
+
+    <!-- Crosshair horizontal line -->
+    <View
+        android:layout_width="12dp"
+        android:layout_height="1dp"
+        android:layout_gravity="center"
+        android:background="#FFFFFF" />
+
+    <!-- Center dot -->
+    <View
+        android:layout_width="4dp"
+        android:layout_height="4dp"
+        android:layout_gravity="center"
+        android:background="#FF4081" />
+
+    <!-- Target Index Number -->
+    <TextView
+        android:id="@+id/tv_target_index"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:shadowColor="#000000"
+        android:shadowDx="1"
+        android:shadowDy="1"
+        android:shadowRadius="2"
+        android:text="1"
+        android:textColor="#FFFFFF"
+        android:textSize="14sp"
+        android:textStyle="bold" />
+
+</FrameLayout>

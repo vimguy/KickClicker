@@ -1,0 +1,41 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Dark Tech Gradient Base -->
+    <path
+        android:fillColor="#0D1117"
+        android:pathData="M0,0h108v108h-108z" />
+    
+    <!-- Outer Cyan Accent Ring -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#1E88E5"
+        android:strokeWidth="3.5"
+        android:pathData="M54,14 A40,40 0 1,1 53.9,14 Z" />
+
+    <!-- Dashed Reticle Arc -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#6366F1"
+        android:strokeWidth="2"
+        android:pathData="M54,24 A30,30 0 1,1 53.9,24 Z" />
+
+    <!-- Crosshairs -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#38BDF8"
+        android:strokeWidth="2.5"
+        android:pathData="M54,10 L54,28 M54,80 L54,98 M10,54 L28,54 M80,54 L98,54" />
+
+    <!-- Dynamic Lightning Bolt / Click Spark -->
+    <path
+        android:fillColor="#FBBF24"
+        android:pathData="M57,32 L40,56 L52,56 L47,76 L68,48 L56,48 Z" />
+
+    <!-- Center Pulse Core -->
+    <path
+        android:fillColor="#38BDF8"
+        android:pathData="M54,50 A4,4 0 1,1 53.9,50 Z" />
+</vector>

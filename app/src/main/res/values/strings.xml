@@ -1,0 +1,6 @@
+<resources>
+    <!-- 仅保留必须以资源形式存在的条目（清单/系统设置引用）；界面文案直接在布局中给出 -->
+    <string name="app_name">KickClicker</string>
+    <string name="accessibility_service_name">KickClicker</string>
+    <string name="accessibility_service_description">免Root派发屏幕手势与控件识别。连点期间可用长按悬浮播放键或通知栏【停止连点】立即停止，用完可在本页面一键关闭。</string>
+</resources>
