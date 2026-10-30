@@ -9,6 +9,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.graphics.Color
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.Handler
@@ -38,6 +39,7 @@ import com.antigravity.kickclicker.data.TargetPoint
 import com.antigravity.kickclicker.engine.ClickEngine
 import com.antigravity.kickclicker.time.TimeSyncManager
 import com.antigravity.kickclicker.ui.MainActivity
+import java.util.Locale
 import kotlin.math.hypot
 
 class FloatingControlService : Service() {
@@ -51,10 +53,11 @@ class FloatingControlService : Service() {
         private const val TAG = "FloatingControlService"
         private const val TARGET_SIZE_DP = 48f
         private const val CLOCK_TICK_MS = 66L
-        private const val STATUS_REFRESH_TICKS = 10 // 连点中状态行平滑刷新
+        private const val STATUS_REFRESH_TICKS = 10
         private const val NOTICE_HOLD_MS = 4500L
         private const val DIALOG_WIDTH_DP = 260f
         private const val DIALOG_HEIGHT_DP = 230f
+        private const val MILLI_DIGITS = 1
 
         @Volatile
         var isRunning = false
@@ -72,7 +75,6 @@ class FloatingControlService : Service() {
 
     private val targetViews = mutableListOf<TargetEntry>()
     private val mainHandler = Handler(Looper.getMainLooper())
-
     private var tickerRunnable: Runnable? = null
     private var tickerTicks = 0
     private var pendingNotice: Runnable? = null
@@ -134,10 +136,6 @@ class FloatingControlService : Service() {
         return START_NOT_STICKY
     }
 
-    /**
-     * 任务被划掉时：空闲/暂停就释放悬浮层（不常驻）；连点或定时等待中保持存活，
-     * 避免抢票关键时刻控制台消失。
-     */
     override fun onTaskRemoved(rootIntent: Intent?) {
         val state = ClickEngine.state
         if (state != ClickEngine.State.RUNNING && state != ClickEngine.State.SCHEDULED) stopSelf()
@@ -158,8 +156,6 @@ class FloatingControlService : Service() {
         super.onDestroy()
     }
 
-    // ---------------- 标靶持久化 ----------------
-
     private fun restoreTargetsIfNeeded() {
         if (targetViews.isNotEmpty()) return
         val saved = AppPrefs.loadTargets(this, screenWidthPx, screenHeightPx)
@@ -172,8 +168,6 @@ class FloatingControlService : Service() {
     private fun persistTargets() {
         AppPrefs.saveTargets(this, ClickEngine.snapshotTargets(), screenWidthPx, screenHeightPx)
     }
-
-    // ---------------- 通知 ----------------
 
     private fun pendingFlags(): Int = PendingIntent.FLAG_UPDATE_CURRENT or
         (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
@@ -247,8 +241,6 @@ class FloatingControlService : Service() {
         }
     }
 
-    // ---------------- 控制条 ----------------
-
     @SuppressLint("ClickableViewAccessibility")
     private fun initFloatingBar() {
         try {
@@ -271,7 +263,6 @@ class FloatingControlService : Service() {
 
             val btnPlay = barView.findViewById<ImageButton>(R.id.btn_float_play)
             btnPlay.setOnClickListener { onPlayClicked() }
-            // 长按播放键 = 立即硬停（连点与定时一起切断），不依赖任何系统版本
             btnPlay.setOnLongClickListener {
                 ClickEngine.emergencyStop("长按停止键")
                 true
@@ -320,14 +311,12 @@ class FloatingControlService : Service() {
         }
         if (ClickEngine.state != ClickEngine.State.RUNNING) {
             ClickAccessibilityService.instance?.resetDispatchStats()
-            // 立即将标靶置为穿透模式，确保第一击不会被标靶自身窗口拦截
             setTargetsTouchable(false)
         }
         dismissConfigDialog()
         ClickEngine.togglePlay()
     }
 
-    /** 每个标靶窗口只持有一个权威 LayoutParams 实例：拖拽与可触摸切换必须改同一个对象。 */
     private class TargetEntry(
         val point: TargetPoint,
         val view: View,
@@ -344,8 +333,6 @@ class FloatingControlService : Service() {
             }
         )
     }
-
-    // ---------------- 标靶 ----------------
 
     private fun addNewTarget() {
         val anchor = barParams ?: return
@@ -387,7 +374,7 @@ class FloatingControlService : Service() {
                             showConfigDialog(params.x, params.y, target = point)
                         }
                     },
-                    onLongPress = null, // 移除标靶本体长按删除，防止拖动微调时误删标靶
+                    onLongPress = null,
                     onMoved = { commitTargetPosition(point, targetView, params) }
                 )
             )
@@ -395,7 +382,6 @@ class FloatingControlService : Service() {
             windowManager.addView(targetView, params)
             targetViews.add(TargetEntry(point, targetView, params))
             targetView.post {
-                // 先裁剪位置，再写回点击坐标，避免贴边标靶的记录点与实际窗口位置错位
                 clampOverlayPosition(params, targetView)
                 commitTargetPosition(point, targetView, params)
                 if (ClickEngine.state == ClickEngine.State.RUNNING) {
@@ -408,7 +394,6 @@ class FloatingControlService : Service() {
         }
     }
 
-    /** 统一参考系：点击点 = 窗口左上角 params + 视图尺寸一半，不再混用 getLocationOnScreen。 */
     private fun commitTargetPosition(point: TargetPoint, view: View, params: WindowManager.LayoutParams) {
         val w = if (view.width > 0) view.width else targetSizePx
         val h = if (view.height > 0) view.height else targetSizePx
@@ -467,8 +452,6 @@ class FloatingControlService : Service() {
 
     private fun setTargetsTouchable(touchable: Boolean) {
         for (entry in targetViews) {
-            // 必须使用 addView 时那个实例；view.layoutParams 是 WindowManager 的另一份拷贝，
-            // 两份对象各自更新会互相覆盖，导致 FLAG_NOT_TOUCHABLE 失效。
             applyTouchable(entry.view, entry.params, touchable)
         }
     }
@@ -484,12 +467,9 @@ class FloatingControlService : Service() {
         try {
             windowManager.updateViewLayout(view, params)
         } catch (t: Throwable) {
-            // 这里静默失败会让注入点击打在标靶自己身上，必须留痕
             Log.e(TAG, "切换标靶可触摸状态失败 touchable=$touchable", t)
         }
     }
-
-    // ---------------- 配置弹窗（全局 / 单标靶） ----------------
 
     private fun showConfigDialog(anchorX: Int, anchorY: Int, target: TargetPoint?) {
         dismissConfigDialog()
@@ -576,8 +556,6 @@ class FloatingControlService : Service() {
         configDialogView = null
     }
 
-    // ---------------- 悬浮时钟 / 倒计时 / 状态行 ----------------
-
     @SuppressLint("ClickableViewAccessibility")
     private fun toggleClock() {
         if (floatingClockView != null) {
@@ -624,12 +602,20 @@ class FloatingControlService : Service() {
     }
 
     private fun renderClock() {
-        val time = TimeSyncManager.formatCurrentClock()
+        val time = formatClockForDisplay(TimeSyncManager.nowMillis())
         if (time != lastClockText) {
             lastClockText = time
             clockTimeView?.text = time
         }
-        clockStatusView?.text = clockStatusLabel()
+
+        val sameColor = Color.WHITE
+        clockTimeView?.setTextColor(sameColor)
+        clockStatusView?.setTextColor(sameColor)
+        clockTimeView?.alpha = 1f
+        clockStatusView?.alpha = 1f
+
+        val status = clockStatusLabel()
+        clockStatusView?.text = status
     }
 
     private fun clockStatusLabel(): String {
@@ -637,7 +623,9 @@ class FloatingControlService : Service() {
             val target = ClickEngine.scheduledAtMillis
             if (target > 0) {
                 val remaining = TimeSyncManager.remainingTo(target)
-                if (remaining > 0) return "倒计时 ${TimeSyncManager.formatCountdown(remaining)}"
+                if (remaining > 0) {
+                    return "倒计时 ${formatCountdownForDisplay(remaining)}"
+                }
             }
         }
         return TimeSyncManager.statusLabel()
@@ -663,7 +651,6 @@ class FloatingControlService : Service() {
     private fun buildStatusText(): String {
         transientNotice?.let { return it }
         val modeLabel = when (ClickEngine.config.mode) {
-            // 单点模式确实只会点标靶①，把这件事常驻显示，避免只靠一条几秒即逝的提示
             ClickMode.RAPID_SINGLE ->
                 if (ClickEngine.targetCount() > 1) "单点·仅①" else "单点"
             ClickMode.SEQUENCE -> "多点"
@@ -675,7 +662,7 @@ class FloatingControlService : Service() {
             ClickEngine.State.SCHEDULED -> {
                 val target = ClickEngine.scheduledAtMillis
                 val remaining = if (target > 0) TimeSyncManager.remainingTo(target) else 0L
-                if (remaining > 0) "定时 ${TimeSyncManager.formatCountdown(remaining)}" else "定时触发中"
+                if (remaining > 0) "定时 ${formatCountdownForDisplay(remaining)}" else "定时触发中"
             }
             ClickEngine.State.RUNNING -> {
                 val stats = ClickAccessibilityService.instance?.dispatchStats()
@@ -698,7 +685,6 @@ class FloatingControlService : Service() {
         }.also { mainHandler.postDelayed(it, NOTICE_HOLD_MS) }
     }
 
-    /** 仅在时钟可见或引擎非空闲时运行刷新循环；空闲且时钟收起时完全停掉。 */
     private fun updateTickerNeed() {
         val needed = floatingClockView != null || ClickEngine.state != ClickEngine.State.IDLE
         if (!needed) {
@@ -733,8 +719,6 @@ class FloatingControlService : Service() {
         tickerRunnable?.let { mainHandler.removeCallbacks(it) }
         tickerRunnable = null
     }
-
-    // ---------------- 工具 ----------------
 
     private fun inflateOverlay(layout: Int): View {
         val themed = ContextThemeWrapper(this, R.style.Theme_KickClicker)
@@ -784,23 +768,6 @@ class FloatingControlService : Service() {
         }
     }
 
-    private fun renderClock() {
-    val time = TimeSyncManager.formatCurrentClock()
-    if (time != lastClockText) {
-        lastClockText = time
-        clockTimeView?.text = time
-    }
-    clockStatusView?.text = clockStatusLabel()
-
-    val color = resources.getColor(R.color.accent_purple)
-    clockTimeView?.setTextColor(color)
-    clockStatusView?.setTextColor(color)
-    }
-    
-    /**
-     * 统一悬浮窗手势：位移超过 touchSlop 判定为拖拽，轻点触发 onTap，长按触发 onLongPress，
-     * 拖拽过程实时裁剪到屏幕范围内，避免控件被拖出屏幕后无法找回。
-     */
     private inner class OverlayTouchListener(
         private val view: View,
         private val params: WindowManager.LayoutParams,
@@ -852,7 +819,6 @@ class FloatingControlService : Service() {
                         mainHandler.removeCallbacks(longPressRunnable)
                     }
                     if (moved) {
-                        // 注意：必须用窗口根视图 view，而不是回调参数 v——控制条的触摸目标是拖拽把手子视图
                         val maxX = (screenWidthPx - view.width).coerceAtLeast(0)
                         val maxY = (screenHeightPx - view.height).coerceAtLeast(0)
                         params.x = (startX + dx.toInt()).coerceIn(0, maxX)
@@ -879,5 +845,35 @@ class FloatingControlService : Service() {
                 else -> return false
             }
         }
+    }
+
+    private fun formatClockForDisplay(epochMillis: Long): String {
+        val total = epochMillis.coerceAtLeast(0L)
+        val ms = (total % 1000L).toInt()
+        val seconds = (total / 1000L % 60L).toInt()
+        val minutes = (total / 60000L % 60L).toInt()
+        val hours = (total / 3600000L % 24L).toInt()
+        val milliText = when (MILLI_DIGITS) {
+            1 -> (ms / 100).toString()
+            2 -> String.format(Locale.US, "%02d", ms / 10)
+            3 -> String.format(Locale.US, "%03d", ms)
+            else -> String.format(Locale.US, "%03d", ms)
+        }
+        return String.format(Locale.US, "%02d:%02d:%02d.%s", hours, minutes, seconds, milliText)
+    }
+
+    private fun formatCountdownForDisplay(remainingMillis: Long): String {
+        val total = remainingMillis.coerceAtLeast(0L)
+        val ms = (total % 1000L).toInt()
+        val seconds = (total / 1000L % 60L).toInt()
+        val minutes = (total / 60000L % 60L).toInt()
+        val hours = (total / 3600000L % 24L).toInt()
+        val milliText = when (MILLI_DIGITS) {
+            1 -> (ms / 100).toString()
+            2 -> String.format(Locale.US, "%02d", ms / 10)
+            3 -> String.format(Locale.US, "%03d", ms)
+            else -> String.format(Locale.US, "%03d", ms)
+        }
+        return String.format(Locale.US, "%02d:%02d:%02d.%s", hours, minutes, seconds, milliText)
     }
 }
