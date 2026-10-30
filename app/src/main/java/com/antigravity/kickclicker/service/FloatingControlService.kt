@@ -784,6 +784,19 @@ class FloatingControlService : Service() {
         }
     }
 
+    private fun renderClock() {
+    val time = TimeSyncManager.formatCurrentClock()
+    if (time != lastClockText) {
+        lastClockText = time
+        clockTimeView?.text = time
+    }
+    clockStatusView?.text = clockStatusLabel()
+
+    val color = resources.getColor(R.color.accent_purple)
+    clockTimeView?.setTextColor(color)
+    clockStatusView?.setTextColor(color)
+    }
+    
     /**
      * 统一悬浮窗手势：位移超过 touchSlop 判定为拖拽，轻点触发 onTap，长按触发 onLongPress，
      * 拖拽过程实时裁剪到屏幕范围内，避免控件被拖出屏幕后无法找回。
