@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/android"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/floating_clock_root"
     android:layout_width="wrap_content"
     android:layout_height="wrap_content"
@@ -33,7 +33,8 @@
             android:text="12:00:00.0"
             android:textColor="@color/accent_purple"
             android:textSize="14sp"
-            android:textStyle="bold" />
+            android:textStyle="bold"
+            android:alpha="1.0" />
     </LinearLayout>
 
     <TextView
@@ -45,5 +46,7 @@
         android:maxLines="1"
         android:text="未校准"
         android:textColor="@color/accent_purple"
-        android:textSize="10sp" />
+        android:textSize="10sp"
+        android:alpha="1.0" />
+
 </LinearLayout>
