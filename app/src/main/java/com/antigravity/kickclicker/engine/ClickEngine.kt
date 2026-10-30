@@ -22,7 +22,6 @@ object ClickEngine {
 
     enum class State { IDLE, SCHEDULED, RUNNING, PAUSED }
 
-    /** 派发计划：在锁内从可变标靶复制出的不可变快照，避免连点线程读到半更新字段。 */
     private data class PlannedTarget(
         val x: Float,
         val y: Float,
@@ -33,8 +32,7 @@ object ClickEngine {
     private const val TAG = "KickClickerEngine"
     private const val HARD_MAX_RUN_MS = 10 * 60 * 1000L
     private const val FINE_SPIN_WINDOW_MS = 30L
-    private const val MIN_SEQUENCE_GAP_MS = 10L
-    private const val MIN_SMART_SCAN_GAP_MS = 60L
+    private const val MIN_SEQUENCE_GAP_MS = 0L
 
     @Volatile
     var state: State = State.IDLE
@@ -46,7 +44,6 @@ object ClickEngine {
 
     val config = ClickConfig()
 
-    // 由悬浮服务写入，供抖动像素换算与越界裁剪使用
     @Volatile
     var displayDensity: Float = 1f
 
@@ -68,7 +65,6 @@ object ClickEngine {
     private var runStartedAtElapsed = 0L
     private var pausedFromScheduledAt = 0L
 
-    /** SupervisorJob 保证单次异常只结束当前任务，不会永久废掉整个作用域。 */
     private val faultHandler = CoroutineExceptionHandler { _, error ->
         Log.e(TAG, "连点任务异常", error)
         executionJob = null
@@ -78,8 +74,6 @@ object ClickEngine {
     }
 
     private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default + faultHandler)
-
-    // ---- 标靶集合（全部经锁访问） ----
 
     fun addTarget(x: Float, y: Float): TargetPoint = synchronized(targetsLock) {
         val point = TargetPoint(
@@ -101,13 +95,15 @@ object ClickEngine {
     }
 
     fun setTargetDelay(point: TargetPoint, delayMs: Long) {
-        synchronized(targetsLock) { point.delayMs = delayMs.coerceAtLeast(MIN_SEQUENCE_GAP_MS) }
+        synchronized(targetsLock) {
+            point.delayMs = delayMs.coerceAtLeast(0L)
+        }
     }
 
     fun applyDelayToAllTargets(delayMs: Long) {
         synchronized(targetsLock) {
-            val clamped = delayMs.coerceAtLeast(MIN_SEQUENCE_GAP_MS)
-            config.intervalMs = delayMs
+            val clamped = delayMs.coerceAtLeast(0L)
+            config.intervalMs = clamped
             for (p in targetList) p.delayMs = clamped
         }
     }
@@ -160,14 +156,11 @@ object ClickEngine {
         targetList.forEachIndexed { index, point -> point.id = index + 1 }
     }
 
-    // ---- 状态与调度 ----
-
     private fun setStateInternal(newState: State) {
         state = newState
         onStateChanged?.invoke(newState)
     }
 
-    /** 播放键统一入口：RUNNING→暂停，PAUSED→恢复，SCHEDULED→取消定时，IDLE→立即连点。 */
     fun togglePlay() {
         when (state) {
             State.RUNNING -> pause()
@@ -227,21 +220,21 @@ object ClickEngine {
                             val clickedByText = service.clickByTextGlobally(config.smartTargetText)
                             if (!clickedByText && targets.isNotEmpty()) {
                                 val burst = config.burstCount.coerceIn(1, 5)
-                                val gap = config.burstGapMs.coerceIn(5L, 200L)
+                                val gap = config.burstGapMs.coerceAtLeast(0L)
                                 for (b in 0 until burst) {
                                     if (!isActive || state != State.RUNNING) break
                                     dispatch(service, targets[0])
                                     if (b < burst - 1) delay(gap)
                                 }
                             }
-                            delay(config.intervalMs.coerceAtLeast(MIN_SMART_SCAN_GAP_MS))
+                            delay(config.intervalMs.coerceAtLeast(0L))
                         }
 
                         ClickMode.RAPID_SINGLE,
                         ClickMode.SEQUENCE -> {
                             if (targets.isNotEmpty()) {
                                 val burst = config.burstCount.coerceIn(1, 5)
-                                val gap = config.burstGapMs.coerceIn(5L, 200L)
+                                val gap = config.burstGapMs.coerceAtLeast(0L)
                                 for (point in targets) {
                                     if (!isActive || state != State.RUNNING) break
                                     for (b in 0 until burst) {
@@ -278,10 +271,6 @@ object ClickEngine {
         }
     }
 
-    /**
-     * 定时开抢。倒计时基于 elapsedRealtime 单调推进，不受墙钟步进影响；
-     * 触发时跳过首发缓冲，把毫秒对齐结果真正用在第一击上。
-     */
     fun scheduleStart(targetTimeMillis: Long) {
         executionJob?.cancel()
         executionJob = null
@@ -319,7 +308,6 @@ object ClickEngine {
                 while (isActive && state == State.SCHEDULED) {
                     val left = deadlineElapsed - SystemClock.elapsedRealtime()
                     if (left <= 0L) {
-                        // 先摘掉自身引用，避免 start() 取消正在运行的定时任务
                         scheduledJob = null
                         start(fromSchedule = true)
                         return@launch
@@ -374,7 +362,6 @@ object ClickEngine {
         setStateInternal(State.IDLE)
     }
 
-    /** 音量键/通知栏急停：立即切断连点并给出触感回执。 */
     fun emergencyStop(reason: String) {
         val wasActive = state == State.RUNNING || state == State.SCHEDULED
         stop()
@@ -383,8 +370,6 @@ object ClickEngine {
             onNotice?.invoke("$reason：已紧急停止")
         }
     }
-
-    // ---- 派发 ----
 
     private fun dispatch(service: ClickAccessibilityService, point: PlannedTarget) {
         val radiusPx = if (config.antiBanEnabled) {
@@ -409,10 +394,9 @@ object ClickEngine {
         if (to <= from) 0f else Random.nextDouble(from.toDouble(), to.toDouble()).toFloat()
 
     private fun jitteredDelay(baseDelay: Long): Long {
-        val base = baseDelay.coerceAtLeast(MIN_SEQUENCE_GAP_MS)
+        val base = baseDelay.coerceAtLeast(0L)
         if (!config.antiBanEnabled) return base
-        // 延迟抖动限制在 ±10% 且不超过 ±40ms，保证节奏可预期
         val jitter = (base * 0.1).toLong().coerceIn(1L, 40L)
-        return (base + Random.nextLong(-jitter, jitter + 1)).coerceAtLeast(MIN_SEQUENCE_GAP_MS)
+        return (base + Random.nextLong(-jitter, jitter + 1)).coerceAtLeast(0L)
     }
 }
