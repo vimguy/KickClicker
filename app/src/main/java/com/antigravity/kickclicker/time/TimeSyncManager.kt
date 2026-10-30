@@ -11,7 +11,6 @@ import java.net.DatagramSocket
 import java.net.HttpURLConnection
 import java.net.InetAddress
 import java.net.URL
-import java.util.Locale
 import kotlin.math.abs
 
 object TimeSyncManager {
@@ -169,7 +168,7 @@ object TimeSyncManager {
         return ((data[offset].toLong() and 0xFF) shl 24) or
             ((data[offset + 1].toLong() and 0xFF) shl 16) or
             ((data[offset + 2].toLong() and 0xFF) shl 8) or
-            ((data[offset + 3].toLong() and 0xFF)
+            ((data[offset + 3].toLong() and 0xFF))
     }
 
     private fun toEpochMillis(seconds: Long, fraction: Long): Long {
@@ -216,30 +215,33 @@ object TimeSyncManager {
 
     fun remainingTo(targetTimeMillis: Long): Long = targetTimeMillis - nowMillis()
 
-    fun formatCurrentClock(): String = formatClockMillis(nowMillis())
+    fun formatCurrentClock(precision: Int = 1): String = formatClockMillis(nowMillis(), precision)
 
-    fun formatClockMillis(epochMillis: Long, digits: Int = 3): String =
-        formatTimeOfDay(epochMillis + BEIJING_OFFSET_MS, digits)
+    fun formatClockMillis(epochMillis: Long, precision: Int = 1): String =
+        formatTimeOfDay(epochMillis + BEIJING_OFFSET_MS, precision)
 
-    fun formatCountdown(remainingMillis: Long, digits: Int = 3): String =
-        formatTimeOfDay(remainingMillis.coerceAtLeast(0L), digits)
+    fun formatCountdown(remainingMillis: Long, precision: Int = 1): String =
+        formatTimeOfDay(remainingMillis.coerceAtLeast(0L), precision)
 
-    private fun formatTimeOfDay(rawMillis: Long, digits: Int): String {
+    private fun formatTimeOfDay(rawMillis: Long, precision: Int = 1): String {
         var total = if (rawMillis < 0L) 0L else rawMillis
-        val ms = (total % 1000L).toInt()
-        total /= 1000L
-        val s = (total % 60L).toInt()
-        total /= 60L
-        val m = (total % 60L).toInt()
-        total /= 60L
-        val h = (total % 24L).toInt()
-        val milliText = when (digits.coerceIn(1, 3)) {
+        var ms = (total % 1000).toInt()
+        total /= 1000
+        val s = (total % 60).toInt()
+        total /= 60
+        val m = (total % 60).toInt()
+        total /= 60
+        val h = (total % 24).toInt()
+
+        val digits = precision.coerceIn(1, 3)
+        val msStr = when (digits) {
             1 -> (ms / 100).toString()
-            2 -> String.format(Locale.US, "%02d", ms / 10)
-            3 -> String.format(Locale.US, "%03d", ms)
-            else -> String.format(Locale.US, "%03d", ms)
+            2 -> String.format("%02d", ms / 10)
+            3 -> String.format("%03d", ms)
+            else -> (ms / 100).toString()
         }
-        return String.format(Locale.US, "%02d:%02d:%02d.%s", h, m, s, milliText)
+
+        return twoDigits[h] + ":" + twoDigits[m] + ":" + twoDigits[s] + "." + msStr
     }
 
     fun statusLabel(): String {
