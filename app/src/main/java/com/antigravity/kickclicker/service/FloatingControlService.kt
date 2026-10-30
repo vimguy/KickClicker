@@ -39,7 +39,6 @@ import com.antigravity.kickclicker.data.TargetPoint
 import com.antigravity.kickclicker.engine.ClickEngine
 import com.antigravity.kickclicker.time.TimeSyncManager
 import com.antigravity.kickclicker.ui.MainActivity
-import java.util.Locale
 import kotlin.math.hypot
 
 class FloatingControlService : Service() {
@@ -57,7 +56,6 @@ class FloatingControlService : Service() {
         private const val NOTICE_HOLD_MS = 4500L
         private const val DIALOG_WIDTH_DP = 260f
         private const val DIALOG_HEIGHT_DP = 230f
-        private const val MILLI_DIGITS = 1
 
         @Volatile
         var isRunning = false
@@ -75,12 +73,14 @@ class FloatingControlService : Service() {
 
     private val targetViews = mutableListOf<TargetEntry>()
     private val mainHandler = Handler(Looper.getMainLooper())
+
     private var tickerRunnable: Runnable? = null
     private var tickerTicks = 0
     private var pendingNotice: Runnable? = null
     private var transientNotice: String? = null
     private var lastStatusText: String? = null
     private var lastClockText: String? = null
+    private var millisDisplayDigits: Int = 1
 
     private val density: Float get() = resources.displayMetrics.density
     private val screenWidthPx: Int get() = resources.displayMetrics.widthPixels
@@ -96,6 +96,7 @@ class FloatingControlService : Service() {
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
         TimeSyncManager.init(this)
+        millisDisplayDigits = AppPrefs.loadMillisDisplayDigits(this)
         ClickEngine.displayDensity = density
         ClickEngine.screenWidthPx = screenWidthPx
         ClickEngine.screenHeightPx = screenHeightPx
@@ -490,10 +491,10 @@ class FloatingControlService : Service() {
                 tvSubtitle.text = "仅修改此标靶点击后的等待时间"
             }
 
-            var current = (target?.delayMs ?: ClickEngine.config.intervalMs).coerceIn(10L, 5000L)
+            var current = (target?.delayMs ?: ClickEngine.config.intervalMs).coerceIn(0L, 5000L)
 
             fun updateDisplay(ms: Long) {
-                current = ms.coerceIn(10L, 5000L)
+                current = ms.coerceIn(0L, 5000L)
                 tvVal.text = "$current ms"
             }
 
@@ -602,20 +603,19 @@ class FloatingControlService : Service() {
     }
 
     private fun renderClock() {
-        val time = formatClockForDisplay(TimeSyncManager.nowMillis())
+        millisDisplayDigits = AppPrefs.loadMillisDisplayDigits(this)
+        val time = TimeSyncManager.formatClockMillis(TimeSyncManager.nowMillis(), millisDisplayDigits)
         if (time != lastClockText) {
             lastClockText = time
             clockTimeView?.text = time
         }
 
-        val sameColor = Color.WHITE
-        clockTimeView?.setTextColor(sameColor)
-        clockStatusView?.setTextColor(sameColor)
+        clockTimeView?.setTextColor(Color.WHITE)
+        clockStatusView?.setTextColor(Color.WHITE)
         clockTimeView?.alpha = 1f
         clockStatusView?.alpha = 1f
 
-        val status = clockStatusLabel()
-        clockStatusView?.text = status
+        clockStatusView?.text = clockStatusLabel()
     }
 
     private fun clockStatusLabel(): String {
@@ -623,9 +623,7 @@ class FloatingControlService : Service() {
             val target = ClickEngine.scheduledAtMillis
             if (target > 0) {
                 val remaining = TimeSyncManager.remainingTo(target)
-                if (remaining > 0) {
-                    return "倒计时 ${formatCountdownForDisplay(remaining)}"
-                }
+                if (remaining > 0) return "倒计时 ${TimeSyncManager.formatCountdown(remaining, millisDisplayDigits)}"
             }
         }
         return TimeSyncManager.statusLabel()
@@ -662,7 +660,7 @@ class FloatingControlService : Service() {
             ClickEngine.State.SCHEDULED -> {
                 val target = ClickEngine.scheduledAtMillis
                 val remaining = if (target > 0) TimeSyncManager.remainingTo(target) else 0L
-                if (remaining > 0) "定时 ${formatCountdownForDisplay(remaining)}" else "定时触发中"
+                if (remaining > 0) "定时 ${TimeSyncManager.formatCountdown(remaining, millisDisplayDigits)}" else "定时触发中"
             }
             ClickEngine.State.RUNNING -> {
                 val stats = ClickAccessibilityService.instance?.dispatchStats()
@@ -832,7 +830,7 @@ class FloatingControlService : Service() {
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     tracking = false
                     mainHandler.removeCallbacks(longPressRunnable)
-                    if (event.actionMasked == MotionEvent.ACTION_UP) {
+                    if (event.actionMasked == Event.ACTION_UP) {
                         if (!moved && !longPressFired) {
                             onTap?.invoke()
                         } else if (moved) {
@@ -845,35 +843,5 @@ class FloatingControlService : Service() {
                 else -> return false
             }
         }
-    }
-
-    private fun formatClockForDisplay(epochMillis: Long): String {
-        val total = epochMillis.coerceAtLeast(0L)
-        val ms = (total % 1000L).toInt()
-        val seconds = (total / 1000L % 60L).toInt()
-        val minutes = (total / 60000L % 60L).toInt()
-        val hours = (total / 3600000L % 24L).toInt()
-        val milliText = when (MILLI_DIGITS) {
-            1 -> (ms / 100).toString()
-            2 -> String.format(Locale.US, "%02d", ms / 10)
-            3 -> String.format(Locale.US, "%03d", ms)
-            else -> String.format(Locale.US, "%03d", ms)
-        }
-        return String.format(Locale.US, "%02d:%02d:%02d.%s", hours, minutes, seconds, milliText)
-    }
-
-    private fun formatCountdownForDisplay(remainingMillis: Long): String {
-        val total = remainingMillis.coerceAtLeast(0L)
-        val ms = (total % 1000L).toInt()
-        val seconds = (total / 1000L % 60L).toInt()
-        val minutes = (total / 60000L % 60L).toInt()
-        val hours = (total / 3600000L % 24L).toInt()
-        val milliText = when (MILLI_DIGITS) {
-            1 -> (ms / 100).toString()
-            2 -> String.format(Locale.US, "%02d", ms / 10)
-            3 -> String.format(Locale.US, "%03d", ms)
-            else -> String.format(Locale.US, "%03d", ms)
-        }
-        return String.format(Locale.US, "%02d:%02d:%02d.%s", hours, minutes, seconds, milliText)
     }
 }
