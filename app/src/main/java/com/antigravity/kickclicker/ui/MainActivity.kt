@@ -77,6 +77,7 @@ class MainActivity : AppCompatActivity() {
     private var lastEngineState: ClickEngine.State? = null
     private var suppressTextWatcher = false
     private var pendingAutoStartOverlay = false
+
     private var millisDisplayDigits = 1
     private var scheduleTimes = mutableListOf<String>()
     private var selectedScheduleIndex = 0
@@ -99,6 +100,8 @@ class MainActivity : AppCompatActivity() {
 
         TimeSyncManager.init(this)
         AppPrefs.restoreConfig(this, ClickEngine.config)
+
+        millisDisplayDigits = AppPrefs.loadMillisDisplayDigits(this)
         loadSavedScheduleTimes()
 
         overlayLauncher = registerForActivityResult(
@@ -130,6 +133,12 @@ class MainActivity : AppCompatActivity() {
         super.onPause()
         mainHandler.removeCallbacks(uiTicker)
         AppPrefs.saveConfig(this, ClickEngine.config)
+        AppPrefs.saveMillisDisplayDigits(this, millisDisplayDigits)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        AppPrefs.saveMillisDisplayDigits(this, millisDisplayDigits)
     }
 
     private fun initViews() {
@@ -141,6 +150,11 @@ class MainActivity : AppCompatActivity() {
         btnSyncTime = findViewById(R.id.btn_sync_time)
         tvTimeSyncStatus = findViewById(R.id.tv_time_sync_status)
         tvCurrentBeijingTime = findViewById(R.id.tv_current_beijing_time)
+
+        tvCurrentBeijingTime.setOnLongClickListener {
+            cycleMillisDisplayDigits()
+            true
+        }
 
         btnIntervalMinus = findViewById(R.id.btn_main_interval_minus)
         tvIntervalVal = findViewById(R.id.tv_main_interval_val)
@@ -173,7 +187,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupListeners() {
         fun setInterval(ms: Long) {
-            val clamped = ms.coerceIn(10L, 5000L)
+            val clamped = ms.coerceIn(0L, 5000L)
             ClickEngine.applyDelayToAllTargets(clamped)
             AppPrefs.saveConfig(this, ClickEngine.config)
             tvIntervalVal.text = "${ClickEngine.config.intervalMs} ms"
@@ -376,35 +390,20 @@ class MainActivity : AppCompatActivity() {
         tvPressVal.text = ClickEngine.config.pressDurationMs.toString()
     }
 
+    private fun loadSavedScheduleTimes() {
+        val saved = AppPrefs.loadScheduleTimes(this)
+        scheduleTimes.clear()
+        scheduleTimes.addAll(saved)
+        selectedScheduleIndex = AppPrefs.loadSelectedScheduleIndex(this).coerceIn(0, scheduleTimes.size - 1)
+    }
+
     private fun bindScheduleInput() {
         val current = if (scheduleTimes.isNotEmpty()) scheduleTimes[selectedScheduleIndex.coerceIn(0, scheduleTimes.size - 1)] else ""
         etScheduleTime.setText(current)
     }
 
-    private fun loadSavedScheduleTimes() {
-        val prefs = getSharedPreferences("kick_clicker_schedule", MODE_PRIVATE)
-        val raw = prefs.getString("times", null) ?: return
-        val parsed = raw.split(Regex("[,;\\n\\r]+"))
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-            .map { normalizeScheduleTime(it) }
-            .filter { it != null }
-        if (parsed.isEmpty()) {
-            scheduleTimes.clear()
-            selectedScheduleIndex = 0
-            return
-        }
-        scheduleTimes.clear()
-        scheduleTimes.addAll(parsed.filterNotNull())
-        selectedScheduleIndex = prefs.getInt("selected_index", 0).coerceIn(0, scheduleTimes.size - 1)
-    }
-
     private fun saveScheduleTimes() {
-        val prefs = getSharedPreferences("kick_clicker_schedule", MODE_PRIVATE)
-        prefs.edit()
-            .putString("times", scheduleTimes.joinToString(","))
-            .putInt("selected_index", selectedScheduleIndex.coerceIn(0, (scheduleTimes.size - 1).coerceAtLeast(0)))
-            .apply()
+        AppPrefs.saveScheduleTimes(this, scheduleTimes, selectedScheduleIndex)
     }
 
     private fun parseScheduleEntries(input: String): List<String> {
@@ -466,21 +465,17 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        val entries = parseScheduleEntries(etScheduleTime.text.toString())
-        if (entries.isEmpty()) {
-            if (scheduleTimes.isEmpty()) {
-                tvScheduleStatus.text = "时间格式应为 HH:mm:ss.SSS（例：20:00:00.000）"
-                tvScheduleStatus.setTextColor(color(R.color.accent_red))
-                return
-            }
-            selectedScheduleIndex = selectedScheduleIndex.coerceIn(0, scheduleTimes.size - 1)
-        }
-        if (entries.isNotEmpty()) {
+        val inputEntries = parseScheduleEntries(etScheduleTime.text.toString())
+        if (inputEntries.isNotEmpty()) {
             scheduleTimes.clear()
-            scheduleTimes.addAll(entries)
+            scheduleTimes.addAll(inputEntries)
             selectedScheduleIndex = 0
             saveScheduleTimes()
             etScheduleTime.setText(scheduleTimes.joinToString(", "))
+        } else if (scheduleTimes.isEmpty()) {
+            tvScheduleStatus.text = "时间格式应为 HH:mm:ss.SSS（例：20:00:00.000）"
+            tvScheduleStatus.setTextColor(color(R.color.accent_red))
+            return
         }
 
         val currentTarget = scheduleTimes.getOrNull(selectedScheduleIndex)
@@ -493,9 +488,11 @@ class MainActivity : AppCompatActivity() {
             tvScheduleStatus.setTextColor(color(R.color.accent_red))
             return
         }
+
         if (!TimeSyncManager.isSynchronized) {
             Toast.makeText(this, "尚未对时，定时精度依赖本机时钟", Toast.LENGTH_LONG).show()
         }
+
         ClickEngine.scheduleStart(target)
         tvScheduleStatus.setTextColor(color(R.color.accent_purple))
         tvScheduleStatus.text = "已选 ${formatBeijingClock(target)} · 倒计时启动"
@@ -668,28 +665,21 @@ class MainActivity : AppCompatActivity() {
 
     private fun color(resId: Int): Int = ContextCompat.getColor(this, resId)
 
-    private fun formatBeijingClock(epochMillis: Long): String {
-        return formatTimeOfDay(epochMillis + BEIJING_OFFSET_MS, millisDisplayDigits)
-    }
-
-    private fun formatCountdown(remainingMillis: Long): String {
-        return formatTimeOfDay(remainingMillis.coerceAtLeast(0L), millisDisplayDigits)
-    }
-
-    private fun formatTimeOfDay(rawEpochMs: Long, digits: Int): String {
-        val total = rawEpochMs.coerceAtLeast(0L)
-        val ms = (total % 1000L).toInt()
-        val seconds = (total / 1000L % 60L).toInt()
-        val minutes = (total / 60000L % 60L).toInt()
-        val hours = (total / 3600000L % 24L).toInt()
-        val milliText = when (digits) {
-            1 -> (ms / 100).toString()
-            2 -> String.format(Locale.US, "%02d", ms / 10)
-            3 -> String.format(Locale.US, "%03d", ms)
-            else -> String.format(Locale.US, "%03d", ms)
+    private fun cycleMillisDisplayDigits() {
+        millisDisplayDigits = when (millisDisplayDigits) {
+            1 -> 2
+            2 -> 3
+            else -> 1
         }
-        return String.format(Locale.US, "%02d:%02d:%02d.%s", hours, minutes, seconds, milliText)
+        AppPrefs.saveMillisDisplayDigits(this, millisDisplayDigits)
+        Toast.makeText(this, "已切换毫秒显示：${millisDisplayDigits}位", Toast.LENGTH_SHORT).show()
     }
+
+    private fun formatBeijingClock(epochMillis: Long): String =
+        TimeSyncManager.formatClockMillis(epochMillis, millisDisplayDigits)
+
+    private fun formatCountdown(remainingMillis: Long): String =
+        TimeSyncManager.formatCountdown(remainingMillis, millisDisplayDigits)
 
     private companion object {
         private const val UI_TICK_MS = 200L
