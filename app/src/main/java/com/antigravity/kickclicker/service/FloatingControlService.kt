@@ -9,7 +9,6 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.graphics.Color
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.Handler
@@ -80,7 +79,6 @@ class FloatingControlService : Service() {
     private var transientNotice: String? = null
     private var lastStatusText: String? = null
     private var lastClockText: String? = null
-    private var millisDisplayDigits: Int = 1
 
     private val density: Float get() = resources.displayMetrics.density
     private val screenWidthPx: Int get() = resources.displayMetrics.widthPixels
@@ -96,7 +94,6 @@ class FloatingControlService : Service() {
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
         TimeSyncManager.init(this)
-        millisDisplayDigits = AppPrefs.loadMillisDisplayDigits(this)
         ClickEngine.displayDensity = density
         ClickEngine.screenWidthPx = screenWidthPx
         ClickEngine.screenHeightPx = screenHeightPx
@@ -257,6 +254,7 @@ class FloatingControlService : Service() {
                 x = dp(48f)
                 y = dp(120f)
             }
+
             barParams = params
 
             barView.findViewById<View>(R.id.btn_float_drag)
@@ -509,6 +507,7 @@ class FloatingControlService : Service() {
             dialogView.findViewById<Button>(R.id.btn_quick_50).setOnClickListener { updateDisplay(50L) }
             dialogView.findViewById<Button>(R.id.btn_quick_100).setOnClickListener { updateDisplay(100L) }
             dialogView.findViewById<Button>(R.id.btn_quick_200).setOnClickListener { updateDisplay(200L) }
+
             dialogView.findViewById<ImageButton>(R.id.btn_dialog_close).setOnClickListener {
                 dismissConfigDialog()
             }
@@ -557,7 +556,6 @@ class FloatingControlService : Service() {
         configDialogView = null
     }
 
-    @SuppressLint("ClickableViewAccessibility")
     private fun toggleClock() {
         if (floatingClockView != null) {
             stopClock()
@@ -602,20 +600,23 @@ class FloatingControlService : Service() {
         }
     }
 
+    private fun applyClockStyleUniform() {
+        val color = getColor(R.color.accent_purple)
+        clockTimeView?.setTextColor(color)
+        clockStatusView?.setTextColor(color)
+        clockTimeView?.alpha = 1f
+        clockStatusView?.alpha = 1f
+    }
+
     private fun renderClock() {
-        millisDisplayDigits = AppPrefs.loadMillisDisplayDigits(this)
-        val time = TimeSyncManager.formatClockMillis(TimeSyncManager.nowMillis(), millisDisplayDigits)
+        val time = TimeSyncManager.formatCurrentClock(ClickEngine.config.timePrecisionDigits)
         if (time != lastClockText) {
             lastClockText = time
             clockTimeView?.text = time
         }
-
-        clockTimeView?.setTextColor(Color.WHITE)
-        clockStatusView?.setTextColor(Color.WHITE)
-        clockTimeView?.alpha = 1f
-        clockStatusView?.alpha = 1f
-
-        clockStatusView?.text = clockStatusLabel()
+        val status = clockStatusLabel()
+        clockStatusView?.text = status
+        applyClockStyleUniform()
     }
 
     private fun clockStatusLabel(): String {
@@ -623,7 +624,7 @@ class FloatingControlService : Service() {
             val target = ClickEngine.scheduledAtMillis
             if (target > 0) {
                 val remaining = TimeSyncManager.remainingTo(target)
-                if (remaining > 0) return "倒计时 ${TimeSyncManager.formatCountdown(remaining, millisDisplayDigits)}"
+                if (remaining > 0) return "倒计时 ${TimeSyncManager.formatCountdown(remaining, ClickEngine.config.timePrecisionDigits)}"
             }
         }
         return TimeSyncManager.statusLabel()
@@ -649,8 +650,7 @@ class FloatingControlService : Service() {
     private fun buildStatusText(): String {
         transientNotice?.let { return it }
         val modeLabel = when (ClickEngine.config.mode) {
-            ClickMode.RAPID_SINGLE ->
-                if (ClickEngine.targetCount() > 1) "单点·仅①" else "单点"
+            ClickMode.RAPID_SINGLE -> if (ClickEngine.targetCount() > 1) "单点·仅①" else "单点"
             ClickMode.SEQUENCE -> "多点"
             ClickMode.SMART_TEXT -> "文本"
         }
@@ -660,7 +660,7 @@ class FloatingControlService : Service() {
             ClickEngine.State.SCHEDULED -> {
                 val target = ClickEngine.scheduledAtMillis
                 val remaining = if (target > 0) TimeSyncManager.remainingTo(target) else 0L
-                if (remaining > 0) "定时 ${TimeSyncManager.formatCountdown(remaining, millisDisplayDigits)}" else "定时触发中"
+                if (remaining > 0) "定时 ${TimeSyncManager.formatCountdown(remaining, ClickEngine.config.timePrecisionDigits)}" else "定时触发中"
             }
             ClickEngine.State.RUNNING -> {
                 val stats = ClickAccessibilityService.instance?.dispatchStats()
@@ -830,7 +830,7 @@ class FloatingControlService : Service() {
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     tracking = false
                     mainHandler.removeCallbacks(longPressRunnable)
-                    if (event.actionMasked == Event.ACTION_UP) {
+                    if (event.actionMasked == MotionEvent.ACTION_UP) {
                         if (!moved && !longPressFired) {
                             onTap?.invoke()
                         } else if (moved) {
