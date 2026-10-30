@@ -22,10 +22,9 @@ object AppPrefs {
     private const val KEY_TIME_OFFSET = "time_offset_ms"
     private const val KEY_TIME_SYNCED_AT = "time_synced_at"
     private const val KEY_TIME_SOURCE = "time_source"
-
-    private const val KEY_MILLIS_DIGITS = "time_millis_digits"
-    private const val KEY_SCHEDULE_TIMES = "schedule_times"
-    private const val KEY_SCHEDULE_SELECTED = "schedule_selected_index"
+    private const val KEY_TIME_PRECISION = "time_precision_digits"
+    private const val KEY_SCHEDULE_TIMES = "schedule_times_json"
+    private const val KEY_SELECTED_SCHEDULE_INDEX = "selected_schedule_index"
 
     private fun prefs(context: Context): SharedPreferences =
         context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -37,8 +36,9 @@ object AppPrefs {
         config.antiBanEnabled = p.getBoolean(KEY_ANTI_BAN, config.antiBanEnabled)
         config.smartTargetText = p.getString(KEY_SMART_TEXT, config.smartTargetText).orEmpty()
             .ifBlank { "立即购买" }
-        config.burstCount = p.getInt(KEY_BURST, config.burstCount).coerceIn(1, 5)
-        config.burstGapMs = p.getLong(KEY_BURST_GAP, config.burstGapMs).coerceIn(0L, 200L)
+        val savedBurst = p.getInt(KEY_BURST, config.burstCount)
+        config.burstCount = savedBurst.coerceIn(1, 5)
+        config.burstGapMs = p.getLong(KEY_BURST_GAP, config.burstGapMs).coerceIn(5L, 200L)
         config.repeatCount = p.getInt(KEY_REPEAT, config.repeatCount).coerceIn(0, 100000)
         config.pressDurationMs = p.getLong(KEY_PRESS_DURATION, config.pressDurationMs)
             .coerceIn(1L, 1000L)
@@ -46,6 +46,8 @@ object AppPrefs {
         config.jitterRadiusDp = if (savedJitter > 3f) 1.2f else savedJitter.coerceIn(0f, 3f)
         val savedFirstDelay = p.getLong(KEY_FIRST_DELAY, 0L)
         config.firstClickDelayMs = if (savedFirstDelay >= 200L) 0L else savedFirstDelay.coerceIn(0L, 2000L)
+        config.timePrecisionDigits = p.getInt(KEY_TIME_PRECISION, config.timePrecisionDigits)
+            .coerceIn(1, 3)
     }
 
     fun saveConfig(context: Context, config: ClickConfig) {
@@ -60,6 +62,7 @@ object AppPrefs {
             .putLong(KEY_PRESS_DURATION, config.pressDurationMs)
             .putFloat(KEY_JITTER_DP, config.jitterRadiusDp)
             .putLong(KEY_FIRST_DELAY, config.firstClickDelayMs)
+            .putInt(KEY_TIME_PRECISION, config.timePrecisionDigits)
             .apply()
     }
 
@@ -104,6 +107,53 @@ object AppPrefs {
         prefs(context).edit().remove(KEY_TARGETS).apply()
     }
 
+    fun loadScheduleState(context: Context): ScheduleState {
+        val p = prefs(context)
+        val defaultTimes = listOf(
+            "20:00:00.000",
+            "20:30:00.000",
+            "21:00:00.000",
+            "22:00:00.000"
+        )
+        val savedRaw = p.getString(KEY_SCHEDULE_TIMES, null)
+        val times = if (savedRaw != null) {
+            try {
+                val arr = JSONArray(savedRaw)
+                val out = mutableListOf<String>()
+                for (i in 0 until arr.length()) {
+                    val item = arr.optString(i, "").trim()
+                    if (item.isNotEmpty()) out.add(item)
+                }
+                out
+            } catch (_: Exception) {
+                defaultTimes.toMutableList()
+            }
+        } else {
+            defaultTimes.toMutableList()
+        }
+
+        val selectedIndex = p.getInt(
+            KEY_SELECTED_SCHEDULE_INDEX,
+            0
+        ).coerceIn(0, (times.size - 1).coerceAtLeast(0))
+
+        return ScheduleState(times = times.ifEmpty { defaultTimes }, selectedIndex = selectedIndex)
+    }
+
+    fun saveScheduleState(context: Context, times: List<String>, selectedIndex: Int) {
+        val valid = times
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+            .take(4)
+
+        val safeIndex = selectedIndex.coerceIn(0, (valid.size - 1).coerceAtLeast(0))
+        prefs(context).edit()
+            .putString(KEY_SCHEDULE_TIMES, JSONArray(valid).toString())
+            .putInt(KEY_SELECTED_SCHEDULE_INDEX, safeIndex)
+            .apply()
+    }
+
     fun loadTimeState(context: Context): TimeState {
         val p = prefs(context)
         return TimeState(
@@ -121,44 +171,9 @@ object AppPrefs {
             .apply()
     }
 
-    fun loadMillisDisplayDigits(context: Context): Int {
-        val v = prefs(context).getInt(KEY_MILLIS_DIGITS, 1)
-        return when (v) {
-            1, 2, 3 -> v
-            else -> 1
-        }
-    }
-
-    fun saveMillisDisplayDigits(context: Context, digits: Int) {
-        val normalized = when (digits) {
-            1, 2, 3 -> digits
-            else -> 1
-        }
-        prefs(context).edit().putInt(KEY_MILLIS_DIGITS, normalized).apply()
-    }
-
-    fun loadScheduleTimes(context: Context): List<String> {
-        val raw = prefs(context).getString(KEY_SCHEDULE_TIMES, null) ?: return emptyList()
-        return raw.split(Regex("[,;\\n\\r]+"))
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-            .map { it }
-    }
-
-    fun saveScheduleTimes(context: Context, times: List<String>, selectedIndex: Int) {
-        val clean = times.map { it.trim() }
-            .filter { it.isNotEmpty() }
-            .distinct()
-            .take(10)
-        val safeIndex = if (clean.isEmpty()) 0 else selectedIndex.coerceIn(0, clean.size - 1)
-        prefs(context).edit()
-            .putString(KEY_SCHEDULE_TIMES, clean.joinToString(","))
-            .putInt(KEY_SCHEDULE_SELECTED, safeIndex)
-            .apply()
-    }
-
-    fun loadSelectedScheduleIndex(context: Context): Int =
-        prefs(context).getInt(KEY_SCHEDULE_SELECTED, 0).coerceAtLeast(0)
-
     data class TimeState(val offsetMillis: Long, val syncedAtMillis: Long, val source: String)
+    data class ScheduleState(
+        val times: List<String>,
+        val selectedIndex: Int
+    )
 }
