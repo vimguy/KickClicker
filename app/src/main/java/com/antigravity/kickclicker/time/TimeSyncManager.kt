@@ -16,7 +16,13 @@ import kotlin.math.abs
 
 object TimeSyncManager {
 
-    enum class Source { LOCAL, NTP, HTTP }
+    enum class Source {
+        LOCAL, NTP, HTTP;
+
+        companion object {
+            fun fromName(name: String?): Source = entries.firstOrNull { it.name == name } ?: HTTP
+        }
+    }
 
     private const val NTP_EPOCH_OFFSET_SECONDS = 2208988800L
     private const val NTP_PACKET_SIZE = 48
@@ -30,6 +36,7 @@ object TimeSyncManager {
 
     private val ntpHosts = listOf("ntp.aliyun.com", "cn.pool.ntp.org", "pool.ntp.org", "time.apple.com")
     private val httpFallbacks = listOf("https://www.baidu.com", "https://www.taobao.com", "https://www.qq.com")
+
     private val twoDigits = Array(100) { if (it < 10) "0$it" else it.toString() }
 
     @Volatile
@@ -45,10 +52,6 @@ object TimeSyncManager {
         private set
 
     @Volatile
-    var millisDigits: Int = 1
-        private set
-
-    @Volatile
     private var syncing = false
 
     @Volatile
@@ -56,10 +59,6 @@ object TimeSyncManager {
 
     private var anchorElapsed = SystemClock.elapsedRealtime()
     private var anchorWall = System.currentTimeMillis()
-
-    fun setDisplayMillisDigits(digits: Int) {
-        millisDigits = digits.coerceIn(1, 3)
-    }
 
     fun init(context: Context) {
         val ctx = context.applicationContext
@@ -170,7 +169,7 @@ object TimeSyncManager {
         return ((data[offset].toLong() and 0xFF) shl 24) or
             ((data[offset + 1].toLong() and 0xFF) shl 16) or
             ((data[offset + 2].toLong() and 0xFF) shl 8) or
-            (data[offset + 3].toLong() and 0xFF)
+            ((data[offset + 3].toLong() and 0xFF)
     }
 
     private fun toEpochMillis(seconds: Long, fraction: Long): Long {
@@ -205,32 +204,48 @@ object TimeSyncManager {
         anchorWall = System.currentTimeMillis() + offsetMillis
     }
 
-    fun nowMillis(): Long = anchorWall + (SystemClock.elapsedRealtime() - anchorElapsed)
+    fun nowMillis(): Long {
+        val monotonic = anchorWall + (SystemClock.elapsedRealtime() - anchorElapsed)
+        val wall = System.currentTimeMillis() + offsetMillis
+        if (abs(monotonic - wall) > REANCHOR_THRESHOLD_MS) {
+            reanchor()
+            return wall
+        }
+        return monotonic
+    }
 
     fun remainingTo(targetTimeMillis: Long): Long = targetTimeMillis - nowMillis()
 
     fun formatCurrentClock(): String = formatClockMillis(nowMillis())
-    fun formatClockMillis(epochMillis: Long): String = formatTimeOfDay(epochMillis + BEIJING_OFFSET_MS)
-    fun formatCountdown(remainingMillis: Long): String =
-        formatTimeOfDay(remainingMillis.coerceAtLeast(0L))
 
-    private fun formatTimeOfDay(rawMillis: Long): String {
+    fun formatClockMillis(epochMillis: Long, digits: Int = 3): String =
+        formatTimeOfDay(epochMillis + BEIJING_OFFSET_MS, digits)
+
+    fun formatCountdown(remainingMillis: Long, digits: Int = 3): String =
+        formatTimeOfDay(remainingMillis.coerceAtLeast(0L), digits)
+
+    private fun formatTimeOfDay(rawMillis: Long, digits: Int): String {
         var total = if (rawMillis < 0L) 0L else rawMillis
-        val ms = (total % 1000).toInt()
-        total /= 1000
-        val s = (total % 60).toInt()
-        total /= 60
-        val m = (total % 60).toInt()
-        total /= 60
-        val h = (total % 24).toInt()
-
-        val milliText = when (millisDigits) {
+        val ms = (total % 1000L).toInt()
+        total /= 1000L
+        val s = (total % 60L).toInt()
+        total /= 60L
+        val m = (total % 60L).toInt()
+        total /= 60L
+        val h = (total % 24L).toInt()
+        val milliText = when (digits.coerceIn(1, 3)) {
             1 -> (ms / 100).toString()
             2 -> String.format(Locale.US, "%02d", ms / 10)
             3 -> String.format(Locale.US, "%03d", ms)
-            else -> "0"
+            else -> String.format(Locale.US, "%03d", ms)
         }
+        return String.format(Locale.US, "%02d:%02d:%02d.%s", h, m, s, milliText)
+    }
 
-        return "${twoDigits[h]}:${twoDigits[m]}:${twoDigits[s]}.${milliText}"
+    fun statusLabel(): String {
+        if (!isSynchronized) return "未校准（使用本机时钟）"
+        val age = syncAgeMillis ?: 0L
+        val prefix = if (source == Source.NTP) "SNTP 已校准" else "HTTP 秒级校准"
+        return "$prefix · ${age / 60000}分钟前"
     }
 }
