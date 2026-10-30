@@ -5,7 +5,6 @@ import android.content.SharedPreferences
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** 配置与标靶的本地持久化。标靶坐标按屏幕宽高归一化存储，以适配分辨率/密度变化。 */
 object AppPrefs {
 
     private const val PREFS = "kick_clicker_prefs"
@@ -36,8 +35,10 @@ object AppPrefs {
         config.antiBanEnabled = p.getBoolean(KEY_ANTI_BAN, config.antiBanEnabled)
         config.smartTargetText = p.getString(KEY_SMART_TEXT, config.smartTargetText).orEmpty()
             .ifBlank { "立即购买" }
+
         val savedBurst = p.getInt(KEY_BURST, config.burstCount)
         config.burstCount = savedBurst.coerceIn(1, 5)
+
         config.burstGapMs = p.getLong(KEY_BURST_GAP, config.burstGapMs).coerceIn(5L, 200L)
         config.repeatCount = p.getInt(KEY_REPEAT, config.repeatCount).coerceIn(0, 100000)
         config.pressDurationMs = p.getLong(KEY_PRESS_DURATION, config.pressDurationMs)
@@ -46,6 +47,7 @@ object AppPrefs {
         config.jitterRadiusDp = if (savedJitter > 3f) 1.2f else savedJitter.coerceIn(0f, 3f)
         val savedFirstDelay = p.getLong(KEY_FIRST_DELAY, 0L)
         config.firstClickDelayMs = if (savedFirstDelay >= 200L) 0L else savedFirstDelay.coerceIn(0L, 2000L)
+
         TimeSyncManager.setDisplayMillisDigits(
             p.getInt(KEY_TIME_MILLIS_DIGITS, TimeSyncManager.millisDigits).coerceIn(1, 3)
         )
