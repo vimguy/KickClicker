@@ -11,21 +11,12 @@ import java.net.DatagramSocket
 import java.net.HttpURLConnection
 import java.net.InetAddress
 import java.net.URL
+import java.util.Locale
 import kotlin.math.abs
 
-/**
- * 毫秒级授时。优先 SNTP（四时间戳、取最小往返时延样本），失败降级到 HTTP Date 头（仅秒级精度）。
- * 时钟推进使用 elapsedRealtime 单调锚点，避免系统墙钟被 NTP/手动调整时倒计时跳变。
- */
 object TimeSyncManager {
 
-    enum class Source {
-        LOCAL, NTP, HTTP;
-
-        companion object {
-            fun fromName(name: String?): Source = entries.firstOrNull { it.name == name } ?: HTTP
-        }
-    }
+    enum class Source { LOCAL, NTP, HTTP }
 
     private const val NTP_EPOCH_OFFSET_SECONDS = 2208988800L
     private const val NTP_PACKET_SIZE = 48
@@ -39,7 +30,6 @@ object TimeSyncManager {
 
     private val ntpHosts = listOf("ntp.aliyun.com", "cn.pool.ntp.org", "pool.ntp.org", "time.apple.com")
     private val httpFallbacks = listOf("https://www.baidu.com", "https://www.taobao.com", "https://www.qq.com")
-
     private val twoDigits = Array(100) { if (it < 10) "0$it" else it.toString() }
 
     @Volatile
@@ -55,6 +45,10 @@ object TimeSyncManager {
         private set
 
     @Volatile
+    var millisDigits: Int = 1
+        private set
+
+    @Volatile
     private var syncing = false
 
     @Volatile
@@ -63,7 +57,10 @@ object TimeSyncManager {
     private var anchorElapsed = SystemClock.elapsedRealtime()
     private var anchorWall = System.currentTimeMillis()
 
-    /** 冷启动复用上次校准结果（未过期时），避免每次都要手动对时。 */
+    fun setDisplayMillisDigits(digits: Int) {
+        millisDigits = digits.coerceIn(1, 3)
+    }
+
     fun init(context: Context) {
         val ctx = context.applicationContext
         if (appContext === ctx) return
@@ -87,7 +84,6 @@ object TimeSyncManager {
         get() = if (syncedAtWallMillis <= 0L) null
         else (System.currentTimeMillis() - syncedAtWallMillis).coerceAtLeast(0L)
 
-    /** 并发去抖：同一时刻只有一次真实网络请求。 */
     suspend fun syncWithNetwork(): Result<Long> {
         if (syncing) return Result.failure(IllegalStateException("对时进行中，请稍候"))
         syncing = true
@@ -131,7 +127,6 @@ object TimeSyncManager {
                 val end = System.currentTimeMillis()
                 val latency = end - start
                 conn.disconnect()
-                // HTTP Date 头只有秒级分辨率，仅作为 SNTP 不可用时的降级
                 if (serverDate > 0) return@withContext Timing(
                     serverDate + latency / 2 - end, latency, Source.HTTP
                 )
@@ -147,7 +142,7 @@ object TimeSyncManager {
             val address = InetAddress.getByName(host)
             socket = DatagramSocket().apply { soTimeout = NTP_READ_TIMEOUT_MS }
             val packet = ByteArray(NTP_PACKET_SIZE)
-            packet[0] = 0x1B // LI=3, VN=3, Mode=3(client)
+            packet[0] = 0x1B
             val t0 = System.currentTimeMillis()
             writeClientTransmit(packet, t0)
             socket.send(DatagramPacket(packet, packet.size, address, 123))
@@ -162,7 +157,6 @@ object TimeSyncManager {
 
             val offset = ((t1 - t0) + (t2 - t3)) / 2
             val delay = (t3 - t0) - (t2 - t1)
-            // 偏差超过 10 小时视为异常报文，避免把设备时间拉到不可用位置
             if (delay < 0 || delay > 5000 || abs(offset) > 10 * 60 * 60 * 1000L) return@withContext null
             Timing(offset, delay, Source.NTP)
         } catch (_: Exception) {
@@ -211,25 +205,12 @@ object TimeSyncManager {
         anchorWall = System.currentTimeMillis() + offsetMillis
     }
 
-    /** 校准后的 epoch 毫秒；墙钟被步进时自动重锚定。 */
-    fun nowMillis(): Long {
-        val monotonic = anchorWall + (SystemClock.elapsedRealtime() - anchorElapsed)
-        val wall = System.currentTimeMillis() + offsetMillis
-        if (abs(monotonic - wall) > REANCHOR_THRESHOLD_MS) {
-            reanchor()
-            return wall
-        }
-        return monotonic
-    }
+    fun nowMillis(): Long = anchorWall + (SystemClock.elapsedRealtime() - anchorElapsed)
 
     fun remainingTo(targetTimeMillis: Long): Long = targetTimeMillis - nowMillis()
 
     fun formatCurrentClock(): String = formatClockMillis(nowMillis())
-
-    /** epoch 毫秒 → 北京时间 HH:mm:ss.SSS，无 Calendar/SimpleDateFormat 分配。 */
     fun formatClockMillis(epochMillis: Long): String = formatTimeOfDay(epochMillis + BEIJING_OFFSET_MS)
-
-    /** 倒计时展示：这是时长不是时刻，不能再叠加时区偏移。 */
     fun formatCountdown(remainingMillis: Long): String =
         formatTimeOfDay(remainingMillis.coerceAtLeast(0L))
 
@@ -242,14 +223,14 @@ object TimeSyncManager {
         val m = (total % 60).toInt()
         total /= 60
         val h = (total % 24).toInt()
-        return twoDigits[h] + ":" + twoDigits[m] + ":" + twoDigits[s] + "." +
-            (ms / 100).toString() + twoDigits[ms % 100]
-    }
 
-    fun statusLabel(): String {
-        if (!isSynchronized) return "未校准（使用本机时钟）"
-        val age = syncAgeMillis ?: 0L
-        val prefix = if (source == Source.NTP) "SNTP 已校准" else "HTTP 秒级校准"
-        return "$prefix · ${age / 60000}分钟前"
+        val milliText = when (millisDigits) {
+            1 -> (ms / 100).toString()
+            2 -> String.format(Locale.US, "%02d", ms / 10)
+            3 -> String.format(Locale.US, "%03d", ms)
+            else -> "0"
+        }
+
+        return "${twoDigits[h]}:${twoDigits[m]}:${twoDigits[s]}.${milliText}"
     }
 }
