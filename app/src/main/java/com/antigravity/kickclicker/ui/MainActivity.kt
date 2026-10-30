@@ -589,6 +589,89 @@ class MainActivity : AppCompatActivity() {
 
     private fun color(resId: Int): Int = ContextCompat.getColor(this, resId)
 
+    private var scheduleTimes = mutableListOf<String>()
+private var selectedScheduleIndex = 0
+
+private fun loadSavedScheduleTimes() {
+    scheduleTimes.clear()
+    scheduleTimes.addAll(AppPrefs.loadScheduleTimes(this))
+    if (scheduleTimes.isEmpty()) {
+        scheduleTimes.add("20:00:00.0")
+        scheduleTimes.add("20:30:00.0")
+        scheduleTimes.add("21:00:00.0")
+        scheduleTimes.add("22:00:00.0")
+        AppPrefs.saveScheduleTimes(this, scheduleTimes)
+    }
+    if (scheduleTimes.isNotEmpty()) {
+        etScheduleTime.setText(scheduleTimes[selectedScheduleIndex])
+    }
+}
+
+private fun saveSelectedScheduleTime() {
+    val raw = etScheduleTime.text?.toString()?.trim().orEmpty()
+    if (raw.isEmpty()) return
+    val normalized = raw.replace("：", ":")
+    scheduleTimes.removeAll { it == normalized }
+    scheduleTimes.add(0, normalized)
+    selectedScheduleIndex = 0
+    AppPrefs.saveScheduleTimes(this, scheduleTimes)
+    etScheduleTime.setText(normalized)
+}
+
+private fun parseScheduleList(raw: String): List<Long> {
+    val items = raw.split(",")
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .map { it.replace("：", ":") }
+
+    return items.mapNotNull { parseBeijingTime(it) }
+}
+
+private fun onScheduleClicked() {
+    when (ClickEngine.state) {
+        ClickEngine.State.SCHEDULED -> {
+            ClickEngine.stop()
+            tvScheduleStatus.text = "已取消定时"
+            tvScheduleStatus.setTextColor(color(R.color.text_secondary))
+            updateScheduleButton()
+            return
+        }
+        ClickEngine.State.RUNNING -> {
+            Toast.makeText(this, "连点进行中，请先用播放键暂停或停止", Toast.LENGTH_SHORT).show()
+            return
+        }
+        else -> Unit
+    }
+
+    if (!ClickAccessibilityService.isServiceEnabled(this)) {
+        Toast.makeText(this, "请先开启【无障碍服务】", Toast.LENGTH_SHORT).show()
+        return
+    }
+    if (ClickEngine.targetCount() == 0 && ClickEngine.config.mode != ClickMode.SMART_TEXT) {
+        Toast.makeText(this, "请先在悬浮控制台添加标靶", Toast.LENGTH_SHORT).show()
+        return
+    }
+
+    val input = etScheduleTime.text?.toString()?.trim().orEmpty()
+    val targets = parseScheduleList(input)
+    if (targets.isEmpty()) {
+        tvScheduleStatus.text = "时间格式应为 HH:mm:ss.SSS（例：20:00:00.000）或多个时间用逗号分隔"
+        tvScheduleStatus.setTextColor(color(R.color.accent_red))
+        return
+    }
+
+    saveSelectedScheduleTime()
+
+    val firstTarget = targets.first()
+    if (!TimeSyncManager.isSynchronized) {
+        Toast.makeText(this, "尚未对时，定时精度依赖本机时钟", Toast.LENGTH_LONG).show()
+    }
+
+    ClickEngine.scheduleStart(firstTarget)
+    tvScheduleStatus.setTextColor(color(R.color.accent_purple))
+    updateScheduleButton()
+}
+
     private companion object {
         private const val UI_TICK_MS = 200L
         private const val BEIJING_OFFSET_MS = 8 * 60 * 60 * 1000L
