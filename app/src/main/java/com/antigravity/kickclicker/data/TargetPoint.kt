@@ -26,7 +26,7 @@ data class ClickConfig(
     var antiBanEnabled: Boolean = true,
     var smartTargetText: String = "立即购买",
     var burstCount: Int = 1,
-    var burstGapMs: Long = 15L,
+    var burstGapMs: Long = 0L,
     var pressDurationMs: Long = 1L,
     var jitterRadiusDp: Float = 1.2f,
     var firstClickDelayMs: Long = 0L
