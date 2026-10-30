@@ -32,7 +32,8 @@ object ClickEngine {
     private const val TAG = "KickClickerEngine"
     private const val HARD_MAX_RUN_MS = 10 * 60 * 1000L
     private const val FINE_SPIN_WINDOW_MS = 30L
-    private const val MIN_SEQUENCE_GAP_MS = 0L
+    private const val MIN_SEQUENCE_GAP_MS = 10L
+    private const val MIN_SMART_SCAN_GAP_MS = 60L
 
     @Volatile
     var state: State = State.IDLE
@@ -95,9 +96,7 @@ object ClickEngine {
     }
 
     fun setTargetDelay(point: TargetPoint, delayMs: Long) {
-        synchronized(targetsLock) {
-            point.delayMs = delayMs.coerceAtLeast(0L)
-        }
+        synchronized(targetsLock) { point.delayMs = delayMs.coerceAtLeast(0L) }
     }
 
     fun applyDelayToAllTargets(delayMs: Long) {
@@ -220,7 +219,7 @@ object ClickEngine {
                             val clickedByText = service.clickByTextGlobally(config.smartTargetText)
                             if (!clickedByText && targets.isNotEmpty()) {
                                 val burst = config.burstCount.coerceIn(1, 5)
-                                val gap = config.burstGapMs.coerceAtLeast(0L)
+                                val gap = config.burstGapMs.coerceIn(5L, 200L)
                                 for (b in 0 until burst) {
                                     if (!isActive || state != State.RUNNING) break
                                     dispatch(service, targets[0])
@@ -234,7 +233,7 @@ object ClickEngine {
                         ClickMode.SEQUENCE -> {
                             if (targets.isNotEmpty()) {
                                 val burst = config.burstCount.coerceIn(1, 5)
-                                val gap = config.burstGapMs.coerceAtLeast(0L)
+                                val gap = config.burstGapMs.coerceIn(5L, 200L)
                                 for (point in targets) {
                                     if (!isActive || state != State.RUNNING) break
                                     for (b in 0 until burst) {
