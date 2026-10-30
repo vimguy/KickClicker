@@ -30,6 +30,7 @@ import com.antigravity.kickclicker.service.ClickAccessibilityService
 import com.antigravity.kickclicker.service.FloatingControlService
 import com.antigravity.kickclicker.time.TimeSyncManager
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
 
@@ -76,6 +77,9 @@ class MainActivity : AppCompatActivity() {
     private var lastEngineState: ClickEngine.State? = null
     private var suppressTextWatcher = false
     private var pendingAutoStartOverlay = false
+    private var millisDisplayDigits = 1
+    private var scheduleTimes = mutableListOf<String>()
+    private var selectedScheduleIndex = 0
 
     private val uiTicker = object : Runnable {
         override fun run() {
@@ -95,6 +99,7 @@ class MainActivity : AppCompatActivity() {
 
         TimeSyncManager.init(this)
         AppPrefs.restoreConfig(this, ClickEngine.config)
+        loadSavedScheduleTimes()
 
         overlayLauncher = registerForActivityResult(
             ActivityResultContracts.StartActivityForResult()
@@ -108,6 +113,7 @@ class MainActivity : AppCompatActivity() {
 
         initViews()
         setupListeners()
+        bindScheduleInput()
         requestNotificationPermissionIfNeeded()
     }
 
@@ -317,7 +323,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun startFloatingConsole() {
         ContextCompat.startForegroundService(this, Intent(this, FloatingControlService::class.java))
-        // 服务的 isRunning 在 onCreate 中异步置位，立即回读会拿到旧值
         mainHandler.postDelayed({ updateFloatingButtonText() }, 250L)
         Toast.makeText(this, "悬浮控制台已启动，返回桌面或抢票软件使用", Toast.LENGTH_LONG).show()
         updateFloatingButtonText()
@@ -365,13 +370,74 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun stepPress(delta: Long) {
-        val next = (ClickEngine.config.pressDurationMs + delta).coerceIn(10L, 500L)
+        val next = (ClickEngine.config.pressDurationMs + delta).coerceIn(1L, 500L)
         ClickEngine.applyPressDurationToAllTargets(next)
         AppPrefs.saveConfig(this, ClickEngine.config)
         tvPressVal.text = ClickEngine.config.pressDurationMs.toString()
     }
 
-    // ---- 定时开抢 ----
+    private fun bindScheduleInput() {
+        val current = if (scheduleTimes.isNotEmpty()) scheduleTimes[selectedScheduleIndex.coerceIn(0, scheduleTimes.size - 1)] else ""
+        etScheduleTime.setText(current)
+    }
+
+    private fun loadSavedScheduleTimes() {
+        val prefs = getSharedPreferences("kick_clicker_schedule", MODE_PRIVATE)
+        val raw = prefs.getString("times", null) ?: return
+        val parsed = raw.split(Regex("[,;\\n\\r]+"))
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .map { normalizeScheduleTime(it) }
+            .filter { it != null }
+        if (parsed.isEmpty()) {
+            scheduleTimes.clear()
+            selectedScheduleIndex = 0
+            return
+        }
+        scheduleTimes.clear()
+        scheduleTimes.addAll(parsed.filterNotNull())
+        selectedScheduleIndex = prefs.getInt("selected_index", 0).coerceIn(0, scheduleTimes.size - 1)
+    }
+
+    private fun saveScheduleTimes() {
+        val prefs = getSharedPreferences("kick_clicker_schedule", MODE_PRIVATE)
+        prefs.edit()
+            .putString("times", scheduleTimes.joinToString(","))
+            .putInt("selected_index", selectedScheduleIndex.coerceIn(0, (scheduleTimes.size - 1).coerceAtLeast(0)))
+            .apply()
+    }
+
+    private fun parseScheduleEntries(input: String): List<String> {
+        val trimmed = input.trim()
+        if (trimmed.isEmpty()) return emptyList()
+        return trimmed.split(Regex("[,;\\n\\r]+"))
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .map { normalizeScheduleTime(it) }
+            .filter { it != null }
+            .map { it!! }
+    }
+
+    private fun normalizeScheduleTime(value: String): String? {
+        val cleaned = value.trim()
+        if (cleaned.isEmpty()) return null
+        val parts = cleaned.split(":")
+        if (parts.size !in 2..3) return null
+        val h = parts[0].toIntOrNull() ?: return null
+        val m = parts[1].toIntOrNull() ?: return null
+        var s = 0
+        var ms = 0
+        if (parts.size == 3) {
+            val secParts = parts[2].split(".")
+            if (secParts.size !in 1..2) return null
+            s = secParts[0].toIntOrNull() ?: return null
+            if (secParts.size == 2) {
+                ms = secParts[1].padEnd(3, '0').take(3).toIntOrNull() ?: return null
+            }
+        }
+        if (h !in 0..23 || m !in 0..59 || s !in 0..59 || ms !in 0..999) return null
+        return String.format(Locale.US, "%02d:%02d:%02d.%03d", h, m, s, ms)
+    }
 
     private fun onScheduleClicked() {
         when (ClickEngine.state) {
@@ -400,7 +466,28 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        val target = parseBeijingTime(etScheduleTime.text.toString())
+        val entries = parseScheduleEntries(etScheduleTime.text.toString())
+        if (entries.isEmpty()) {
+            if (scheduleTimes.isEmpty()) {
+                tvScheduleStatus.text = "时间格式应为 HH:mm:ss.SSS（例：20:00:00.000）"
+                tvScheduleStatus.setTextColor(color(R.color.accent_red))
+                return
+            }
+            selectedScheduleIndex = selectedScheduleIndex.coerceIn(0, scheduleTimes.size - 1)
+        }
+        if (entries.isNotEmpty()) {
+            scheduleTimes.clear()
+            scheduleTimes.addAll(entries)
+            selectedScheduleIndex = 0
+            saveScheduleTimes()
+            etScheduleTime.setText(scheduleTimes.joinToString(", "))
+        }
+
+        val currentTarget = scheduleTimes.getOrNull(selectedScheduleIndex)
+            ?: scheduleTimes.firstOrNull()
+            ?: return
+
+        val target = parseBeijingTime(currentTarget)
         if (target == null) {
             tvScheduleStatus.text = "时间格式应为 HH:mm:ss.SSS（例：20:00:00.000）"
             tvScheduleStatus.setTextColor(color(R.color.accent_red))
@@ -411,10 +498,10 @@ class MainActivity : AppCompatActivity() {
         }
         ClickEngine.scheduleStart(target)
         tvScheduleStatus.setTextColor(color(R.color.accent_purple))
+        tvScheduleStatus.text = "已选 ${formatBeijingClock(target)} · 倒计时启动"
         updateScheduleButton()
     }
 
-    /** 按北京时间解析 HH:mm:ss[.SSS]；时刻已过则顺延至次日同一时刻。 */
     private fun parseBeijingTime(input: String): Long? {
         val parts = input.trim().split(":")
         if (parts.isEmpty()) return null
@@ -448,10 +535,8 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ---- 周期性 UI 刷新（仅主线程读状态，不与悬浮服务争抢引擎回调） ----
-
     private fun tickUi() {
-        val time = TimeSyncManager.formatCurrentClock()
+        val time = formatBeijingClock(TimeSyncManager.nowMillis())
         if (time != lastClockText) {
             lastClockText = time
             tvCurrentBeijingTime.text = time
@@ -473,14 +558,16 @@ class MainActivity : AppCompatActivity() {
                 else -> Unit
             }
         }
+
         if (state == ClickEngine.State.SCHEDULED) {
             val remaining = TimeSyncManager.remainingTo(ClickEngine.scheduledAtMillis)
             tvScheduleStatus.text = if (remaining > 0) {
-                "定时 ${TimeSyncManager.formatClockMillis(ClickEngine.scheduledAtMillis)} · 倒计时 ${TimeSyncManager.formatCountdown(remaining)}"
+                "定时 ${formatBeijingClock(ClickEngine.scheduledAtMillis)} · 倒计时 ${formatCountdown(remaining)}"
             } else {
                 "定时已触发"
             }
         }
+
         updateFloatingButtonText()
     }
 
@@ -579,98 +666,30 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun requestNotificationPermissionIfNeeded() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
-        val granted = ContextCompat.checkSelfPermission(
-            this, Manifest.permission.POST_NOTIFICATIONS
-        ) == PackageManager.PERMISSION_GRANTED
-        if (!granted) notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-    }
-
     private fun color(resId: Int): Int = ContextCompat.getColor(this, resId)
 
-    private var scheduleTimes = mutableListOf<String>()
-private var selectedScheduleIndex = 0
-
-private fun loadSavedScheduleTimes() {
-    scheduleTimes.clear()
-    scheduleTimes.addAll(AppPrefs.loadScheduleTimes(this))
-    if (scheduleTimes.isEmpty()) {
-        scheduleTimes.add("20:00:00.0")
-        scheduleTimes.add("20:30:00.0")
-        scheduleTimes.add("21:00:00.0")
-        scheduleTimes.add("22:00:00.0")
-        AppPrefs.saveScheduleTimes(this, scheduleTimes)
+    private fun formatBeijingClock(epochMillis: Long): String {
+        return formatTimeOfDay(epochMillis + BEIJING_OFFSET_MS, millisDisplayDigits)
     }
-    if (scheduleTimes.isNotEmpty()) {
-        etScheduleTime.setText(scheduleTimes[selectedScheduleIndex])
+
+    private fun formatCountdown(remainingMillis: Long): String {
+        return formatTimeOfDay(remainingMillis.coerceAtLeast(0L), millisDisplayDigits)
     }
-}
 
-private fun saveSelectedScheduleTime() {
-    val raw = etScheduleTime.text?.toString()?.trim().orEmpty()
-    if (raw.isEmpty()) return
-    val normalized = raw.replace("：", ":")
-    scheduleTimes.removeAll { it == normalized }
-    scheduleTimes.add(0, normalized)
-    selectedScheduleIndex = 0
-    AppPrefs.saveScheduleTimes(this, scheduleTimes)
-    etScheduleTime.setText(normalized)
-}
-
-private fun parseScheduleList(raw: String): List<Long> {
-    val items = raw.split(",")
-        .map { it.trim() }
-        .filter { it.isNotEmpty() }
-        .map { it.replace("：", ":") }
-
-    return items.mapNotNull { parseBeijingTime(it) }
-}
-
-private fun onScheduleClicked() {
-    when (ClickEngine.state) {
-        ClickEngine.State.SCHEDULED -> {
-            ClickEngine.stop()
-            tvScheduleStatus.text = "已取消定时"
-            tvScheduleStatus.setTextColor(color(R.color.text_secondary))
-            updateScheduleButton()
-            return
+    private fun formatTimeOfDay(rawEpochMs: Long, digits: Int): String {
+        val total = rawEpochMs.coerceAtLeast(0L)
+        val ms = (total % 1000L).toInt()
+        val seconds = (total / 1000L % 60L).toInt()
+        val minutes = (total / 60000L % 60L).toInt()
+        val hours = (total / 3600000L % 24L).toInt()
+        val milliText = when (digits) {
+            1 -> (ms / 100).toString()
+            2 -> String.format(Locale.US, "%02d", ms / 10)
+            3 -> String.format(Locale.US, "%03d", ms)
+            else -> String.format(Locale.US, "%03d", ms)
         }
-        ClickEngine.State.RUNNING -> {
-            Toast.makeText(this, "连点进行中，请先用播放键暂停或停止", Toast.LENGTH_SHORT).show()
-            return
-        }
-        else -> Unit
+        return String.format(Locale.US, "%02d:%02d:%02d.%s", hours, minutes, seconds, milliText)
     }
-
-    if (!ClickAccessibilityService.isServiceEnabled(this)) {
-        Toast.makeText(this, "请先开启【无障碍服务】", Toast.LENGTH_SHORT).show()
-        return
-    }
-    if (ClickEngine.targetCount() == 0 && ClickEngine.config.mode != ClickMode.SMART_TEXT) {
-        Toast.makeText(this, "请先在悬浮控制台添加标靶", Toast.LENGTH_SHORT).show()
-        return
-    }
-
-    val input = etScheduleTime.text?.toString()?.trim().orEmpty()
-    val targets = parseScheduleList(input)
-    if (targets.isEmpty()) {
-        tvScheduleStatus.text = "时间格式应为 HH:mm:ss.SSS（例：20:00:00.000）或多个时间用逗号分隔"
-        tvScheduleStatus.setTextColor(color(R.color.accent_red))
-        return
-    }
-
-    saveSelectedScheduleTime()
-
-    val firstTarget = targets.first()
-    if (!TimeSyncManager.isSynchronized) {
-        Toast.makeText(this, "尚未对时，定时精度依赖本机时钟", Toast.LENGTH_LONG).show()
-    }
-
-    ClickEngine.scheduleStart(firstTarget)
-    tvScheduleStatus.setTextColor(color(R.color.accent_purple))
-    updateScheduleButton()
-}
 
     private companion object {
         private const val UI_TICK_MS = 200L
